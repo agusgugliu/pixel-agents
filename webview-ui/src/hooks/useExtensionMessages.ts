@@ -46,6 +46,24 @@ export interface WorkspaceFolder {
   path: string;
 }
 
+export interface VirtualAgentInfo {
+  id: number;
+  key: string;
+  title: string;
+  role: string;
+  department: string;
+  model: string;
+  hasAgentFile: boolean;
+  isLaunched: boolean;
+}
+
+export interface OrgInfo {
+  id: string;
+  name: string;
+  configPath: string;
+  agentBasePath: string;
+}
+
 export interface ExtensionMessageState {
   agents: number[];
   selectedAgent: number | null;
@@ -66,6 +84,9 @@ export interface ExtensionMessageState {
   hooksEnabled: boolean;
   setHooksEnabled: (v: boolean) => void;
   hooksInfoShown: boolean;
+  virtualAgents: Map<number, VirtualAgentInfo>;
+  availableOrgs: OrgInfo[];
+  activeOrgId: string | null;
 }
 
 function saveAgentSeats(os: OfficeState): void {
@@ -103,6 +124,9 @@ export function useExtensionMessages(
   const [alwaysShowLabels, setAlwaysShowLabels] = useState(false);
   const [hooksEnabled, setHooksEnabled] = useState(true);
   const [hooksInfoShown, setHooksInfoShown] = useState(true);
+  const [virtualAgents, setVirtualAgents] = useState<Map<number, VirtualAgentInfo>>(new Map());
+  const [availableOrgs, setAvailableOrgs] = useState<OrgInfo[]>([]);
+  const [activeOrgId, setActiveOrgId] = useState<string | null>(null);
 
   // Track whether initial layout has been loaded (ref to avoid re-render)
   const layoutReadyRef = useRef(false);
@@ -389,6 +413,67 @@ export function useExtensionMessages(
         setSubagentCharacters((prev) =>
           prev.filter((s) => !(s.parentAgentId === id && s.parentToolId === parentToolId)),
         );
+      } else if (msg.type === 'virtualAgentsLoaded') {
+        const incomingAgents = msg.agents as Array<{
+          id: number;
+          key: string;
+          title: string;
+          role: string;
+          department: string;
+          model: string;
+          hasAgentFile: boolean;
+        }>;
+        const newMap = new Map<number, VirtualAgentInfo>();
+        const ids: number[] = [];
+        for (const va of incomingAgents) {
+          newMap.set(va.id, { ...va, isLaunched: false });
+          ids.push(va.id);
+          // Add character to the office (idle/wandering)
+          if (layoutReadyRef.current) {
+            os.addAgent(va.id, undefined, undefined, undefined, false);
+            // Set the character as inactive so it wanders
+            os.setAgentActive(va.id, false);
+          }
+        }
+        setVirtualAgents(newMap);
+        setAgents((prev) => {
+          const existing = new Set(prev);
+          const merged = [...prev];
+          for (const id of ids) {
+            if (!existing.has(id)) merged.push(id);
+          }
+          return merged.sort((a, b) => a - b);
+        });
+        if (os.characters.size > 0) {
+          saveAgentSeats(os);
+        }
+      } else if (msg.type === 'virtualAgentLaunched') {
+        const id = msg.id as number;
+        setVirtualAgents((prev) => {
+          const next = new Map(prev);
+          const va = next.get(id);
+          if (va) {
+            next.set(id, { ...va, isLaunched: true });
+          }
+          return next;
+        });
+        os.setAgentActive(id, true);
+      } else if (msg.type === 'virtualAgentsCleared') {
+        // Remove all virtual agent characters that weren't launched
+        setVirtualAgents((prev) => {
+          for (const [id, va] of prev) {
+            if (!va.isLaunched) {
+              os.removeAgent(id);
+              setAgents((a) => a.filter((aid) => aid !== id));
+            }
+          }
+          return new Map();
+        });
+      } else if (msg.type === 'orgsUpdated') {
+        const orgs = msg.orgs as OrgInfo[];
+        const orgId = msg.activeOrgId as string | null;
+        setAvailableOrgs(orgs);
+        setActiveOrgId(orgId);
       } else if (msg.type === 'characterSpritesLoaded') {
         const characters = msg.characters as Array<{
           down: string[][][];
@@ -431,6 +516,12 @@ export function useExtensionMessages(
         }
         if (typeof msg.extensionVersion === 'string') {
           setExtensionVersion(msg.extensionVersion as string);
+        }
+        if (Array.isArray(msg.orgs)) {
+          setAvailableOrgs(msg.orgs as OrgInfo[]);
+        }
+        if (typeof msg.activeOrgId === 'string' || msg.activeOrgId === null) {
+          setActiveOrgId(msg.activeOrgId as string | null);
         }
       } else if (msg.type === 'externalAssetDirectoriesUpdated') {
         if (Array.isArray(msg.dirs)) {
@@ -475,5 +566,8 @@ export function useExtensionMessages(
     hooksEnabled,
     setHooksEnabled,
     hooksInfoShown,
+    virtualAgents,
+    availableOrgs,
+    activeOrgId,
   };
 }

@@ -55,7 +55,15 @@ import {
 } from './fileWatcher.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
 import { readLayoutFromFile, watchLayoutFile, writeLayoutToFile } from './layoutPersistence.js';
+import { orgNameToId, readOrgName } from './orgConfigLoader.js';
+import type { OrgConfig, VirtualAgent } from './orgTypes.js';
 import type { AgentState } from './types.js';
+import {
+  clearVirtualAgents,
+  launchVirtualAgentTerminal,
+  loadOrgAgents,
+  sendVirtualAgentsToWebview,
+} from './virtualAgentManager.js';
 
 export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
   nextAgentId = { current: 1 };
@@ -78,6 +86,9 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
   // External session detection (VS Code extension panel, etc.)
   externalScanTimer: ReturnType<typeof setInterval> | null = null;
   staleCheckTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Organization mode: virtual agents from org config files
+  virtualAgents = new Map<number, VirtualAgent>();
 
   // Global session scanning (opt-in "Watch All Sessions" toggle)
   watchAllSessions = { current: false };
@@ -189,6 +200,32 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           }
         }
       } else if (message.type === 'focusAgent') {
+        // Check if this is a virtual agent that needs launching
+        const va = this.virtualAgents.get(message.id as number);
+        if (va && !va.isLaunched) {
+          if (va.agentFilePath) {
+            launchVirtualAgentTerminal(
+              va,
+              this.agents,
+              this.activeAgentId,
+              this.knownJsonlFiles,
+              this.fileWatchers,
+              this.pollingTimers,
+              this.waitingTimers,
+              this.permissionTimers,
+              this.jsonlPollTimers,
+              this.projectScanTimer,
+              this.nextTerminalIndex,
+              this.webview,
+              this.persistAgents,
+            );
+            const agent = this.agents.get(va.id);
+            if (agent) {
+              this.registerAgentHook(agent);
+            }
+          }
+          return;
+        }
         const agent = this.agents.get(message.id);
         if (agent) {
           if (agent.terminalRef) {
@@ -341,6 +378,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           hooksEnabled,
           hooksInfoShown,
           externalAssetDirectories: config.externalAssetDirectories,
+          orgs: config.orgs,
+          activeOrgId: config.activeOrgId,
         });
 
         // Send workspace folders to webview (only when multi-root)
@@ -509,6 +548,25 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           }
         })();
         sendExistingAgents(this.agents, this.context, this.webview);
+
+        // Load org virtual agents if an org is active
+        if (config.activeOrgId) {
+          const orgConfig = config.orgs.find((o) => o.id === config.activeOrgId);
+          if (orgConfig) {
+            try {
+              const agents = loadOrgAgents(orgConfig, this.nextAgentId);
+              for (const va of agents) {
+                this.virtualAgents.set(va.id, va);
+              }
+              sendVirtualAgentsToWebview(orgConfig, agents, this.webview);
+              console.log(
+                `[Pixel Agents] Restored org "${orgConfig.name}" with ${agents.length} virtual agents`,
+              );
+            } catch (err) {
+              console.error(`[Pixel Agents] Failed to restore org "${orgConfig.name}":`, err);
+            }
+          }
+        }
       } else if (message.type === 'requestDiagnostics') {
         // Send connection diagnostics for all agents to the Debug View
         const diagnostics: Array<Record<string, unknown>> = [];
@@ -585,6 +643,121 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         this.webview?.postMessage({
           type: 'externalAssetDirectoriesUpdated',
           dirs: cfg.externalAssetDirectories,
+        });
+      } else if (message.type === 'switchOrg') {
+        const orgId = message.orgId as string | null;
+        // Clear existing virtual agents
+        clearVirtualAgents(this.virtualAgents, this.webview);
+        // Update config
+        const cfg = readConfig();
+        cfg.activeOrgId = orgId;
+        writeConfig(cfg);
+        // Load new org if specified
+        if (orgId) {
+          const orgConfig = cfg.orgs.find((o) => o.id === orgId);
+          if (orgConfig) {
+            try {
+              const agents = loadOrgAgents(orgConfig, this.nextAgentId);
+              for (const va of agents) {
+                this.virtualAgents.set(va.id, va);
+              }
+              sendVirtualAgentsToWebview(orgConfig, agents, this.webview);
+              console.log(
+                `[Pixel Agents] Loaded org "${orgConfig.name}" with ${agents.length} virtual agents`,
+              );
+            } catch (err) {
+              console.error(`[Pixel Agents] Failed to load org "${orgConfig.name}":`, err);
+              vscode.window.showErrorMessage(
+                `Failed to load organization: ${orgConfig.name}. Check the config file path.`,
+              );
+            }
+          }
+        }
+        // Notify webview of org state
+        this.webview?.postMessage({
+          type: 'orgsUpdated',
+          orgs: cfg.orgs,
+          activeOrgId: cfg.activeOrgId,
+        });
+      } else if (message.type === 'launchVirtualAgent') {
+        const va = this.virtualAgents.get(message.id as number);
+        if (va && !va.isLaunched) {
+          launchVirtualAgentTerminal(
+            va,
+            this.agents,
+            this.activeAgentId,
+            this.knownJsonlFiles,
+            this.fileWatchers,
+            this.pollingTimers,
+            this.waitingTimers,
+            this.permissionTimers,
+            this.jsonlPollTimers,
+            this.projectScanTimer,
+            this.nextTerminalIndex,
+            this.webview,
+            this.persistAgents,
+          );
+          // Register with hook handler
+          const agent = this.agents.get(va.id);
+          if (agent) {
+            this.registerAgentHook(agent);
+          }
+        }
+      } else if (message.type === 'addOrg') {
+        // Show file picker for org config JSON
+        const uris = await vscode.window.showOpenDialog({
+          canSelectFiles: true,
+          canSelectFolders: false,
+          canSelectMany: false,
+          filters: { 'JSON Files': ['json'] },
+          openLabel: 'Select Organization Config',
+        });
+        if (!uris || uris.length === 0) return;
+        const configPath = uris[0].fsPath;
+        const orgName = readOrgName(configPath);
+        if (!orgName) {
+          vscode.window.showErrorMessage('Invalid org config file: missing "company" field.');
+          return;
+        }
+        // Ask for base path (default to config file's parent directory)
+        const basePaths = await vscode.window.showOpenDialog({
+          canSelectFiles: false,
+          canSelectFolders: true,
+          canSelectMany: false,
+          defaultUri: vscode.Uri.file(path.dirname(configPath)),
+          openLabel: 'Select Agent Base Directory',
+        });
+        const agentBasePath = basePaths?.[0]?.fsPath ?? path.dirname(configPath);
+        const newOrg: OrgConfig = {
+          id: orgNameToId(orgName),
+          name: orgName,
+          configPath,
+          agentBasePath,
+        };
+        const cfg = readConfig();
+        // Don't add duplicates
+        if (!cfg.orgs.some((o) => o.id === newOrg.id)) {
+          cfg.orgs.push(newOrg);
+          writeConfig(cfg);
+        }
+        this.webview?.postMessage({
+          type: 'orgsUpdated',
+          orgs: cfg.orgs,
+          activeOrgId: cfg.activeOrgId,
+        });
+      } else if (message.type === 'removeOrg') {
+        const orgId = message.orgId as string;
+        const cfg = readConfig();
+        cfg.orgs = cfg.orgs.filter((o) => o.id !== orgId);
+        if (cfg.activeOrgId === orgId) {
+          cfg.activeOrgId = null;
+          clearVirtualAgents(this.virtualAgents, this.webview);
+        }
+        writeConfig(cfg);
+        this.webview?.postMessage({
+          type: 'orgsUpdated',
+          orgs: cfg.orgs,
+          activeOrgId: cfg.activeOrgId,
         });
       } else if (message.type === 'importLayout') {
         const uris = await vscode.window.showOpenDialog({

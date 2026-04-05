@@ -71,6 +71,9 @@ function App() {
     hooksEnabled,
     setHooksEnabled,
     hooksInfoShown,
+    virtualAgents,
+    availableOrgs,
+    activeOrgId,
   } = useExtensionMessages(getOfficeState, editor.setLastSavedLayout, isEditDirty);
 
   // Show migration notice once layout reset is detected
@@ -248,6 +251,7 @@ function App() {
             panRef={editor.panRef}
             onCloseAgent={handleCloseAgent}
             alwaysShowOverlay={alwaysShowOverlay}
+            virtualAgents={virtualAgents}
           />
         </>
       ) : (
@@ -326,6 +330,8 @@ function App() {
         isSettingsOpen={isSettingsOpen}
         onToggleSettings={() => setIsSettingsOpen((v) => !v)}
         workspaceFolders={workspaceFolders}
+        availableOrgs={availableOrgs}
+        activeOrgId={activeOrgId}
       />
 
       <VersionIndicator

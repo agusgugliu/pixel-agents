@@ -3,13 +3,20 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { CONFIG_FILE_NAME, LAYOUT_FILE_DIR } from './constants.js';
+import type { OrgConfig } from './orgTypes.js';
 
 export interface PixelAgentsConfig {
   externalAssetDirectories: string[];
+  /** Registered organizations for org mode */
+  orgs: OrgConfig[];
+  /** Currently active organization ID, or null for no org mode */
+  activeOrgId: string | null;
 }
 
 const DEFAULT_CONFIG: PixelAgentsConfig = {
   externalAssetDirectories: [],
+  orgs: [],
+  activeOrgId: null,
 };
 
 function getConfigFilePath(): string {
@@ -26,6 +33,18 @@ export function readConfig(): PixelAgentsConfig {
       externalAssetDirectories: Array.isArray(parsed.externalAssetDirectories)
         ? parsed.externalAssetDirectories.filter((d): d is string => typeof d === 'string')
         : [],
+      orgs: Array.isArray(parsed.orgs)
+        ? parsed.orgs.filter(
+            (o): o is OrgConfig =>
+              typeof o === 'object' &&
+              o !== null &&
+              typeof (o as OrgConfig).id === 'string' &&
+              typeof (o as OrgConfig).name === 'string' &&
+              typeof (o as OrgConfig).configPath === 'string' &&
+              typeof (o as OrgConfig).agentBasePath === 'string',
+          )
+        : [],
+      activeOrgId: typeof parsed.activeOrgId === 'string' ? parsed.activeOrgId : null,
     };
   } catch (err) {
     console.error('[Pixel Agents] Failed to read config file:', err);

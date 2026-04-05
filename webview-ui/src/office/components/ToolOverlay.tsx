@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { Button } from '../../components/ui/Button.js';
 import { CHARACTER_SITTING_OFFSET_PX, TOOL_OVERLAY_VERTICAL_OFFSET } from '../../constants.js';
-import type { SubagentCharacter } from '../../hooks/useExtensionMessages.js';
+import type { SubagentCharacter, VirtualAgentInfo } from '../../hooks/useExtensionMessages.js';
 import type { OfficeState } from '../engine/officeState.js';
 import type { ToolActivity } from '../types.js';
 import { CharacterState, TILE_SIZE } from '../types.js';
@@ -17,6 +17,7 @@ interface ToolOverlayProps {
   panRef: React.RefObject<{ x: number; y: number }>;
   onCloseAgent: (id: number) => void;
   alwaysShowOverlay: boolean;
+  virtualAgents?: Map<number, VirtualAgentInfo>;
 }
 
 /** Derive a short human-readable activity string from tools/status */
@@ -53,6 +54,7 @@ export function ToolOverlay({
   panRef,
   onCloseAgent,
   alwaysShowOverlay,
+  virtualAgents,
 }: ToolOverlayProps) {
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -102,10 +104,18 @@ export function ToolOverlay({
         const screenY =
           (deviceOffsetY + (ch.y + sittingOffset - TOOL_OVERLAY_VERTICAL_OFFSET) * zoom) / dpr;
 
+        // Check if this is a virtual agent
+        const virtualInfo = virtualAgents?.get(id);
+        const isVirtual = !!virtualInfo && !virtualInfo.isLaunched;
+
         // Get activity text
         const subHasPermission = isSub && ch.bubbleType === 'permission';
         let activityText: string;
-        if (isSub) {
+        let secondaryText: string | undefined;
+        if (isVirtual) {
+          activityText = virtualInfo.title;
+          secondaryText = virtualInfo.department;
+        } else if (isSub) {
           if (subHasPermission) {
             activityText = 'Needs approval';
           } else {
@@ -135,7 +145,7 @@ export function ToolOverlay({
             className="absolute flex flex-col items-center -translate-x-1/2"
             style={{
               left: screenX,
-              top: screenY - (ch.folderName ? 34 : 28),
+              top: screenY - (isVirtual ? 40 : ch.folderName || secondaryText ? 34 : 28),
               pointerEvents: isSelected ? 'auto' : 'none',
               opacity: alwaysShowOverlay && !isSelected && !isHovered ? (isSub ? 0.5 : 0.75) : 1,
               zIndex: isSelected ? 42 : 41,
@@ -158,13 +168,29 @@ export function ToolOverlay({
                 >
                   {activityText}
                 </span>
-                {ch.folderName && (
+                {(secondaryText || ch.folderName) && (
                   <span className="text-2xs leading-none overflow-hidden text-ellipsis block">
-                    {ch.folderName}
+                    {secondaryText || ch.folderName}
+                  </span>
+                )}
+                {isVirtual && isSelected && virtualInfo.hasAgentFile && (
+                  <span
+                    className="text-2xs leading-none overflow-hidden text-ellipsis block"
+                    style={{ color: 'var(--color-status-active)' }}
+                  >
+                    Click to launch
+                  </span>
+                )}
+                {isVirtual && isSelected && !virtualInfo.hasAgentFile && (
+                  <span
+                    className="text-2xs leading-none overflow-hidden text-ellipsis block"
+                    style={{ opacity: 0.5 }}
+                  >
+                    Worker agent
                   </span>
                 )}
               </div>
-              {isSelected && !isSub && (
+              {isSelected && !isSub && !isVirtual && (
                 <Button
                   variant="ghost"
                   size="icon"
