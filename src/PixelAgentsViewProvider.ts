@@ -54,7 +54,13 @@ import {
   startStaleExternalAgentCheck,
 } from './fileWatcher.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
-import { readLayoutFromFile, watchLayoutFile, writeLayoutToFile } from './layoutPersistence.js';
+import {
+  readLayoutFromFile,
+  readOrgLayout,
+  watchLayoutFile,
+  writeLayoutToFile,
+  writeOrgLayout,
+} from './layoutPersistence.js';
 import { orgNameToId, readOrgName } from './orgConfigLoader.js';
 import type { OrgConfig, VirtualAgent } from './orgTypes.js';
 import type { AgentState } from './types.js';
@@ -89,6 +95,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
   // Organization mode: virtual agents from org config files
   virtualAgents = new Map<number, VirtualAgent>();
+  activeOrgId: string | null = null;
 
   // Global session scanning (opt-in "Watch All Sessions" toggle)
   watchAllSessions = { current: false };
@@ -261,7 +268,12 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         this.context.workspaceState.update(WORKSPACE_KEY_AGENT_SEATS, message.seats);
       } else if (message.type === 'saveLayout') {
         this.layoutWatcher?.markOwnWrite();
-        writeLayoutToFile(message.layout as Record<string, unknown>);
+        const layout = message.layout as Record<string, unknown>;
+        writeLayoutToFile(layout);
+        // Also save to org-specific location if an org is active
+        if (this.activeOrgId) {
+          writeOrgLayout(this.activeOrgId, layout);
+        }
       } else if (message.type === 'setSoundEnabled') {
         this.context.globalState.update(GLOBAL_KEY_SOUND_ENABLED, message.enabled);
       } else if (message.type === 'setLastSeenVersion') {
@@ -550,6 +562,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         sendExistingAgents(this.agents, this.context, this.webview);
 
         // Load org virtual agents if an org is active
+        this.activeOrgId = config.activeOrgId;
         if (config.activeOrgId) {
           const orgConfig = config.orgs.find((o) => o.id === config.activeOrgId);
           if (orgConfig) {
@@ -646,13 +659,42 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         });
       } else if (message.type === 'switchOrg') {
         const orgId = message.orgId as string | null;
+
+        // Save current layout to the appropriate location before switching
+        const currentLayout = readLayoutFromFile();
+        if (currentLayout && this.activeOrgId) {
+          writeOrgLayout(this.activeOrgId, currentLayout);
+        }
+
         // Clear existing virtual agents
         clearVirtualAgents(this.virtualAgents, this.webview);
+
         // Update config
         const cfg = readConfig();
         cfg.activeOrgId = orgId;
         writeConfig(cfg);
-        // Load new org if specified
+        this.activeOrgId = orgId;
+
+        // Load new org's layout (or fall back to default)
+        if (orgId) {
+          const orgLayout = readOrgLayout(orgId);
+          if (orgLayout) {
+            this.layoutWatcher?.markOwnWrite();
+            writeLayoutToFile(orgLayout);
+            this.webview?.postMessage({ type: 'layoutLoaded', layout: orgLayout });
+            console.log(`[Pixel Agents] Loaded org layout for "${orgId}"`);
+          }
+          // If no org layout exists, keep the current layout (user can customize it)
+        } else if (currentLayout) {
+          // Switching back to no-org mode: restore the default layout from file
+          // (it's already there since we saved the org layout above)
+          const defaultLayout = readLayoutFromFile();
+          if (defaultLayout) {
+            this.webview?.postMessage({ type: 'layoutLoaded', layout: defaultLayout });
+          }
+        }
+
+        // Load new org agents if specified
         if (orgId) {
           const orgConfig = cfg.orgs.find((o) => o.id === orgId);
           if (orgConfig) {

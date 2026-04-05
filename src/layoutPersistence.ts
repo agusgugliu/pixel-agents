@@ -20,6 +20,11 @@ function getLayoutFilePath(): string {
   return path.join(os.homedir(), LAYOUT_FILE_DIR, LAYOUT_FILE_NAME);
 }
 
+/** Get layout file path for a specific organization */
+export function getOrgLayoutFilePath(orgId: string): string {
+  return path.join(os.homedir(), LAYOUT_FILE_DIR, 'orgs', orgId, LAYOUT_FILE_NAME);
+}
+
 export function readLayoutFromFile(): Record<string, unknown> | null {
   const filePath = getLayoutFilePath();
   try {
@@ -99,6 +104,37 @@ export function migrateAndLoadLayout(
 
   // 4. Nothing
   return null;
+}
+
+/** Read a layout file for a specific organization */
+export function readOrgLayout(orgId: string): Record<string, unknown> | null {
+  const filePath = getOrgLayoutFilePath(orgId);
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch (err) {
+    console.error(`[Pixel Agents] Failed to read org layout for "${orgId}":`, err);
+    return null;
+  }
+}
+
+/** Write a layout file for a specific organization */
+export function writeOrgLayout(orgId: string, layout: Record<string, unknown>): void {
+  const filePath = getOrgLayoutFilePath(orgId);
+  const dir = path.dirname(filePath);
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const json = JSON.stringify(layout, null, 2);
+    const tmpPath = filePath + '.tmp';
+    fs.writeFileSync(tmpPath, json, 'utf-8');
+    fs.renameSync(tmpPath, filePath);
+    console.log(`[Pixel Agents] Saved org layout for "${orgId}"`);
+  } catch (err) {
+    console.error(`[Pixel Agents] Failed to write org layout for "${orgId}":`, err);
+  }
 }
 
 /**
