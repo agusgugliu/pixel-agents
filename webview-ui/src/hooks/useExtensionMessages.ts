@@ -140,6 +140,8 @@ export function useExtensionMessages(
       seatId?: string;
       folderName?: string;
     }> = [];
+    // Buffer virtual agents until layout is loaded
+    let pendingVirtualAgentIds: number[] = [];
 
     const handler = (e: MessageEvent) => {
       const msg = e.data;
@@ -165,6 +167,12 @@ export function useExtensionMessages(
           os.addAgent(p.id, p.palette, p.hueShift, p.seatId, true, p.folderName);
         }
         pendingAgents = [];
+        // Add buffered virtual agents
+        for (const vid of pendingVirtualAgentIds) {
+          os.addAgent(vid, undefined, undefined, undefined, false);
+          os.setAgentActive(vid, false);
+        }
+        pendingVirtualAgentIds = [];
         layoutReadyRef.current = true;
         setLayoutReady(true);
         if (msg.wasReset) {
@@ -433,6 +441,8 @@ export function useExtensionMessages(
             os.addAgent(va.id, undefined, undefined, undefined, false);
             // Set the character as inactive so it wanders
             os.setAgentActive(va.id, false);
+          } else {
+            pendingVirtualAgentIds.push(va.id);
           }
         }
         setVirtualAgents(newMap);
